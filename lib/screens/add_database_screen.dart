@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:pluradb/models/database_config.dart';
@@ -42,6 +43,14 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
   final _tursoUrlController = TextEditingController();
   final _tursoTokenController = TextEditingController();
 
+  // CockroachDB
+  final _crdbHostController = TextEditingController();
+  final _crdbPortController = TextEditingController(text: '26257');
+  final _crdbDbNameController = TextEditingController();
+  final _crdbUserController = TextEditingController();
+  final _crdbPasswordController = TextEditingController();
+  final _crdbTokenController = TextEditingController();
+
   // Custom
   final _customHostController = TextEditingController();
   final _customPortController = TextEditingController(text: '5432');
@@ -79,6 +88,12 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
       _psPasswordController.text = db.password;
       _tursoUrlController.text = db.databaseUrl;
       _tursoTokenController.text = db.authToken;
+      _crdbHostController.text = db.host;
+      _crdbPortController.text = db.port;
+      _crdbDbNameController.text = db.databaseName;
+      _crdbUserController.text = db.user;
+      _crdbPasswordController.text = db.password;
+      _crdbTokenController.text = db.anonKey;
       _customHostController.text = db.host;
       _customPortController.text = db.port;
       _customDbNameController.text = db.databaseName;
@@ -106,6 +121,12 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
     _psPasswordController.dispose();
     _tursoUrlController.dispose();
     _tursoTokenController.dispose();
+    _crdbHostController.dispose();
+    _crdbPortController.dispose();
+    _crdbDbNameController.dispose();
+    _crdbUserController.dispose();
+    _crdbPasswordController.dispose();
+    _crdbTokenController.dispose();
     _customHostController.dispose();
     _customPortController.dispose();
     _customDbNameController.dispose();
@@ -118,39 +139,93 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
     final existing = widget.existing;
     return switch (_selectedProvider) {
       ProviderType.supabase => DatabaseConfig(
-          id: existing?.id ?? '', name: _nameController.text.trim(), projectName: _projectNameController.text.trim(), provider: ProviderType.supabase,
-          projectUrl: _projectUrlController.text.trim(), anonKey: _anonKeyController.text.trim(), serviceRoleKey: _serviceRoleKeyController.text.trim(),
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.supabase,
+          projectUrl: _projectUrlController.text.trim(),
+          anonKey: _anonKeyController.text.trim(),
+          serviceRoleKey: _serviceRoleKeyController.text.trim(),
         ),
       ProviderType.neon => DatabaseConfig(
-          id: existing?.id ?? '', name: _nameController.text.trim(), projectName: _projectNameController.text.trim(), provider: ProviderType.neon,
-          connectionString: _connectionStringController.text.trim(), host: _neonHostController.text.trim(), databaseName: _neonDbNameController.text.trim(),
-          user: _neonUserController.text.trim(), password: _neonPasswordController.text.trim(), branch: _neonBranchController.text.trim(),
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.neon,
+          connectionString: _connectionStringController.text.trim(),
+          host: _neonHostController.text.trim(),
+          databaseName: _neonDbNameController.text.trim(),
+          user: _neonUserController.text.trim(),
+          password: _neonPasswordController.text.trim(),
+          branch: _neonBranchController.text.trim(),
         ),
       ProviderType.planetscale => DatabaseConfig(
-          id: existing?.id ?? '', name: _nameController.text.trim(), projectName: _projectNameController.text.trim(), provider: ProviderType.planetscale,
-          host: _psHostController.text.trim(), databaseName: _psDbNameController.text.trim(), user: _psUserController.text.trim(), password: _psPasswordController.text.trim(),
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.planetscale,
+          host: _psHostController.text.trim(),
+          databaseName: _psDbNameController.text.trim(),
+          user: _psUserController.text.trim(),
+          password: _psPasswordController.text.trim(),
         ),
       ProviderType.turso => DatabaseConfig(
-          id: existing?.id ?? '', name: _nameController.text.trim(), projectName: _projectNameController.text.trim(), provider: ProviderType.turso,
-          databaseUrl: _tursoUrlController.text.trim(), authToken: _tursoTokenController.text.trim(),
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.turso,
+          databaseUrl: _tursoUrlController.text.trim(),
+          authToken: _tursoTokenController.text.trim(),
+        ),
+      ProviderType.cockroachdb => DatabaseConfig(
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.cockroachdb,
+          host: _crdbHostController.text.trim(),
+          port: _crdbPortController.text.trim(),
+          databaseName: _crdbDbNameController.text.trim(),
+          user: _crdbUserController.text.trim(),
+          password: _crdbPasswordController.text.trim(),
+          anonKey: _crdbTokenController.text.trim(),
         ),
       ProviderType.custom => DatabaseConfig(
-          id: existing?.id ?? '', name: _nameController.text.trim(), projectName: _projectNameController.text.trim(), provider: ProviderType.custom,
-          host: _customHostController.text.trim(), port: _customPortController.text.trim(), databaseName: _customDbNameController.text.trim(),
-          user: _customUserController.text.trim(), password: _customPasswordController.text.trim(),
+          id: existing?.id ?? '',
+          name: _nameController.text.trim(),
+          projectName: _projectNameController.text.trim(),
+          provider: ProviderType.custom,
+          host: _customHostController.text.trim(),
+          port: _customPortController.text.trim(),
+          databaseName: _customDbNameController.text.trim(),
+          user: _customUserController.text.trim(),
+          password: _customPasswordController.text.trim(),
         ),
     };
   }
 
   Future<void> _testConnection() async {
-    setState(() { _testing = true; _testSuccess = false; _testError = null; });
+    setState(() {
+      _testing = true;
+      _testSuccess = false;
+      _testError = null;
+    });
     try {
       final config = _buildConfig();
       final service = DatabaseServiceFactory.create(config);
-      final ok = await service.testConnection();
-      setState(() { _testing = false; _testSuccess = ok; if (!ok) _testError = 'Connection failed. Check your credentials.'; });
+      final result = await service.testConnection();
+      setState(() {
+        _testing = false;
+        if (result) {
+          _testSuccess = true;
+        } else {
+          _testError = 'Connection failed. Check your credentials and network.';
+        }
+      });
     } catch (e) {
-      setState(() { _testing = false; _testError = e.toString(); });
+      setState(() {
+        _testing = false;
+        _testError = e.toString();
+      });
     }
   }
 
@@ -181,10 +256,17 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
             // Database name
             _label('DATABASE NAME'),
             const SizedBox(height: 8),
-            TextFormField(controller: _nameController, decoration: const InputDecoration(hintText: 'My Production DB', prefixIcon: Icon(Icons.label_outline, color: AppTheme.textMuted)), validator: (v) => v?.trim().isEmpty ?? true ? 'Name is required' : null),
+            TextFormField(
+              controller: _nameController,
+              decoration: const InputDecoration(hintText: 'My Production DB', prefixIcon: Icon(Icons.label_outline, color: AppTheme.textMuted)),
+              validator: (v) => (v?.trim().isEmpty ?? true) ? 'Name is required' : null,
+            ),
             const SizedBox(height: 12),
-            // Project name (optional label)
-            TextFormField(controller: _projectNameController, decoration: const InputDecoration(hintText: 'Project name (optional)', prefixIcon: Icon(Icons.folder_outlined, color: AppTheme.textMuted))),
+            // Project name (optional)
+            TextFormField(
+              controller: _projectNameController,
+              decoration: const InputDecoration(hintText: 'Project name (optional)', prefixIcon: Icon(Icons.folder_outlined, color: AppTheme.textMuted)),
+            ),
             const SizedBox(height: 24),
 
             // Provider selector
@@ -192,15 +274,40 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
             const SizedBox(height: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(color: AppTheme.surfaceLight, borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.border)),
+              decoration: BoxDecoration(
+                color: AppTheme.surfaceLight,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.border),
+              ),
               child: DropdownButtonHideUnderline(
                 child: DropdownButton<ProviderType>(
                   value: _selectedProvider,
                   isExpanded: true,
                   dropdownColor: AppTheme.surface,
                   style: const TextStyle(color: AppTheme.textPrimary, fontFamily: 'Inter', fontSize: 14),
-                  items: ProviderType.values.map((p) => DropdownMenuItem(value: p, child: Row(children: [Container(width: 10, height: 10, decoration: BoxDecoration(color: Color(int.parse(p.color.replaceFirst('#', '0xFF'))), shape: BoxShape.circle)), const SizedBox(width: 10), Text(p.displayName)]))).toList(),
-                  onChanged: (v) => setState(() { _selectedProvider = v!; _testSuccess = false; _testError = null; }),
+                  items: ProviderType.values
+                      .map((p) => DropdownMenuItem(
+                            value: p,
+                            child: Row(
+                              children: [
+                                Container(
+                                    width: 10,
+                                    height: 10,
+                                    decoration: BoxDecoration(
+                                      color: Color(int.parse(p.color.replaceFirst('#', '0xFF'))),
+                                      shape: BoxShape.circle,
+                                    )),
+                                const SizedBox(width: 10),
+                                Text(p.displayName),
+                              ],
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() {
+                    _selectedProvider = v!;
+                    _testSuccess = false;
+                    _testError = null;
+                  }),
                 ),
               ),
             ),
@@ -213,27 +320,54 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
             // Status
             if (_testError != null)
               Container(
-                padding: const EdgeInsets.all(12), margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: AppTheme.error.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.error.withValues(alpha: 0.3))),
-                child: Row(children: [const Icon(Icons.error_outline, color: AppTheme.error, size: 20), const SizedBox(width: 8), Expanded(child: Text(_testError!, style: const TextStyle(color: AppTheme.error, fontSize: 13, fontFamily: 'Inter')))]),
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: AppTheme.error.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.error.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, color: AppTheme.error, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(_testError!, style: const TextStyle(color: AppTheme.error, fontSize: 13, fontFamily: 'Inter'))),
+                  ],
+                ),
               ),
             if (_testSuccess)
               Container(
-                padding: const EdgeInsets.all(12), margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(color: AppTheme.success.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8), border: Border.all(color: AppTheme.success.withValues(alpha: 0.3))),
-                child: const Row(children: [Icon(Icons.check_circle_outline, color: AppTheme.success, size: 20), SizedBox(width: 8), Text('Connection successful!', style: TextStyle(color: AppTheme.success, fontSize: 13, fontFamily: 'Inter'))]),
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 16),
+                decoration: BoxDecoration(
+                  color: AppTheme.success.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppTheme.success.withValues(alpha: 0.3)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.check_circle_outline, color: AppTheme.success, size: 20),
+                    SizedBox(width: 8),
+                    Text('Connection successful!', style: TextStyle(color: AppTheme.success, fontSize: 13, fontFamily: 'Inter')),
+                  ],
+                ),
               ),
 
             OutlinedButton.icon(
               onPressed: _testing ? null : _testConnection,
-              icon: _testing ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accent)) : const Icon(Icons.wifi_tethering),
+              icon: _testing
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.accent))
+                  : const Icon(Icons.wifi_tethering),
               label: Text(_testing ? 'Testing...' : 'Test Connection'),
             ),
             const SizedBox(height: 24),
 
             SizedBox(
               width: double.infinity,
-              child: ElevatedButton(onPressed: _save, child: Text(_isEditing ? 'Save Changes' : 'Add Database')),
+              child: ElevatedButton(
+                onPressed: _save,
+                child: Text(_isEditing ? 'Save Changes' : 'Add Database'),
+              ),
             ),
             const SizedBox(height: 40),
           ],
@@ -245,17 +379,19 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
   List<Widget> _buildFields() {
     return switch (_selectedProvider) {
       ProviderType.supabase => [
-        _label('CONNECTION DETAILS'), const SizedBox(height: 8),
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
         _field(_projectUrlController, 'Project URL', 'https://xxxxx.supabase.co', Icons.link),
         const SizedBox(height: 12),
         _field(_anonKeyController, 'Anon Key', 'eyJhbGciOi...', Icons.key),
         const SizedBox(height: 12),
         _field(_serviceRoleKeyController, 'Service Role Key (optional)', 'For write operations', Icons.vpn_key, obscure: true),
         const SizedBox(height: 8),
-        const Text('Get these from Project Settings > API in your Supabase dashboard', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+        const Text('Find these in Supabase Dashboard > Project Settings > API', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
       ],
       ProviderType.neon => [
-        _label('CONNECTION DETAILS'), const SizedBox(height: 8),
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
         _field(_connectionStringController, 'Connection String (optional)', 'postgresql://user:pass@host/db', Icons.link),
         const SizedBox(height: 16),
         const Text('Or fill in manually:', textAlign: TextAlign.center, style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
@@ -269,26 +405,52 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
         _field(_neonPasswordController, 'Password', '', Icons.lock, obscure: true),
         const SizedBox(height: 12),
         _field(_neonBranchController, 'Branch (optional)', 'main', Icons.call_split),
+        const SizedBox(height: 8),
+        const Text('Requires Neon Serverless Driver HTTP endpoint or an HTTP SQL proxy', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
       ],
       ProviderType.planetscale => [
-        _label('CONNECTION DETAILS'), const SizedBox(height: 8),
-        _field(_psHostController, 'Host', 'xxx.psdb.cloud', Icons.dns),
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
+        _field(_psHostController, 'Host / API Endpoint', 'xxx.psdb.cloud or api endpoint URL', Icons.dns),
         const SizedBox(height: 12),
         _field(_psDbNameController, 'Database Name', 'my-db', Icons.storage),
         const SizedBox(height: 12),
-        _field(_psUserController, 'User', '', Icons.person),
+        _field(_psUserController, 'User (optional)', '', Icons.person),
         const SizedBox(height: 12),
-        _field(_psPasswordController, 'Password', '', Icons.lock, obscure: true),
+        _field(_psPasswordController, 'Password / API Token', '', Icons.lock, obscure: true),
+        const SizedBox(height: 8),
+        const Text('PlanetScale requires HTTP SQL proxy access or API credentials', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
       ],
       ProviderType.turso => [
-        _label('CONNECTION DETAILS'), const SizedBox(height: 8),
-        _field(_tursoUrlController, 'Database URL', 'libsql://my-db-orgname.turso.io', Icons.link),
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
+        _field(_tursoUrlController, 'Database URL', 'libsql://dbname-orgname.turso.io', Icons.link),
         const SizedBox(height: 12),
         _field(_tursoTokenController, 'Auth Token', '', Icons.key, obscure: true),
+        const SizedBox(height: 8),
+        const Text('Get your URL and token from the Turso dashboard or CLI', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+      ],
+      ProviderType.cockroachdb => [
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
+        _field(_crdbHostController, 'Host / Proxy URL', 'host or http://proxy-url', Icons.dns),
+        const SizedBox(height: 12),
+        _field(_crdbPortController, 'Port', '26257', Icons.numbers),
+        const SizedBox(height: 12),
+        _field(_crdbDbNameController, 'Database Name', 'defaultdb', Icons.storage),
+        const SizedBox(height: 12),
+        _field(_crdbUserController, 'User', 'root', Icons.person),
+        const SizedBox(height: 12),
+        _field(_crdbPasswordController, 'Password', '', Icons.lock, obscure: true),
+        const SizedBox(height: 12),
+        _field(_crdbTokenController, 'API Token (optional)', 'If proxy uses token auth', Icons.vpn_key, obscure: true),
+        const SizedBox(height: 8),
+        const Text('CockroachDB requires an HTTP SQL proxy for mobile access.\nRecommended: postgres-http-proxy, pg-proxy, or CockroachDB Cloud API.', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
       ],
       ProviderType.custom => [
-        _label('CONNECTION DETAILS'), const SizedBox(height: 8),
-        _field(_customHostController, 'Host', '192.168.1.100', Icons.dns),
+        _label('CONNECTION DETAILS'),
+        const SizedBox(height: 8),
+        _field(_customHostController, 'Host / Proxy URL', '192.168.1.100 or http://proxy-url', Icons.dns),
         const SizedBox(height: 12),
         _field(_customPortController, 'Port', '5432', Icons.numbers),
         const SizedBox(height: 12),
@@ -298,16 +460,27 @@ class _AddDatabaseScreenState extends State<AddDatabaseScreen> {
         const SizedBox(height: 12),
         _field(_customPasswordController, 'Password', '', Icons.lock, obscure: true),
         const SizedBox(height: 8),
-        const Text('Custom databases require an HTTP SQL proxy endpoint for mobile access', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
+        const Text('Custom databases require an HTTP SQL proxy endpoint\n(e.g., postgres-http-proxy, pgrest, supabase-compatible API)', style: TextStyle(color: AppTheme.textMuted, fontSize: 12)),
       ],
     };
   }
 
   Widget _field(TextEditingController c, String label, String hint, IconData icon, {bool obscure = false}) {
-    return TextFormField(controller: c, obscureText: obscure, decoration: InputDecoration(labelText: label, hintText: hint, prefixIcon: Icon(icon, color: AppTheme.textMuted, size: 20)));
+    return TextFormField(
+      controller: c,
+      obscureText: obscure,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hint,
+        prefixIcon: Icon(icon, color: AppTheme.textMuted, size: 20),
+      ),
+    );
   }
 
   Widget _label(String text) {
-    return Text(text, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textMuted, letterSpacing: 1.2, fontFamily: 'Inter'));
+    return Text(
+      text,
+      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textMuted, letterSpacing: 1.2, fontFamily: 'Inter'),
+    );
   }
 }

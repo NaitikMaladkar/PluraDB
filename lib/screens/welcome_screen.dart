@@ -29,7 +29,7 @@ class WelcomeScreen extends StatelessWidget {
               const Text('PluraDB', style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: AppTheme.textPrimary, fontFamily: 'Inter', letterSpacing: -0.5)),
               const SizedBox(height: 12),
               const Text(
-                'Your multi-database manager.\nAdd databases from Supabase, Neon,\nPlanetScale, Turso, and more\nin one place.',
+                'Your multi-database manager.\nAdd databases from Supabase, Neon,\nPlanetScale, Turso, CockroachDB\nand more — in one place.',
                 style: TextStyle(fontSize: 16, color: AppTheme.textSecondary, height: 1.6, fontFamily: 'Inter'),
               ),
               const Spacer(flex: 1),

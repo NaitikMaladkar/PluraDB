@@ -70,7 +70,9 @@ class AppProvider extends ChangeNotifier {
     try {
       final connected = await _activeDbService!.testConnection();
       _isLoading = false;
-      if (!connected) _error = 'Connection failed. Check your credentials.';
+      if (!connected) {
+        _error = 'Connection failed. Check your credentials, network, and that the URL/host is correct.';
+      }
       notifyListeners();
       return connected;
     } catch (e) {
