@@ -27,7 +27,7 @@ class SettingsScreen extends StatelessWidget {
           ]),
           const SizedBox(height: 24),
           _section('ABOUT', [
-            ListTile(leading: const Icon(Icons.info_outline, color: AppTheme.textMuted, size: 20), title: const Text('PluraDB', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)), subtitle: const Text('Multi-database manager for Android'), trailing: const Text('v1.1.0', style: TextStyle(color: AppTheme.textMuted, fontSize: 13))),
+            ListTile(leading: const Icon(Icons.info_outline, color: AppTheme.textMuted, size: 20), title: const Text('PluraDB', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)), subtitle: const Text('Multi-database manager for Android'), trailing: const Text('v1.0.0', style: TextStyle(color: AppTheme.textMuted, fontSize: 13))),
             const ListTile(leading: Icon(Icons.shield_outlined, color: AppTheme.textMuted, size: 20), title: Text('Privacy', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)), subtitle: Text('All data stored locally on your device.')),
           ]),
         ],

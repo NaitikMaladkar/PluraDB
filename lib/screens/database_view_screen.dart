@@ -253,9 +253,13 @@ class _DataTabState extends State<_DataTab> {
     final names = <String>{};
     if (schema.isSuccess && schema.rows.isNotEmpty) {
       if (schema.columns.contains('table_name')) {
-        for (final row in schema.rows) names.add(row['table_name'].toString());
+        for (final row in schema.rows) {
+          names.add(row['table_name'].toString());
+        }
       } else if (schema.columns.contains('Table')) {
-        for (final row in schema.rows) names.add(row['Table'].toString());
+        for (final row in schema.rows) {
+          names.add(row['Table'].toString());
+        }
       }
     }
     if (names.isNotEmpty && mounted) {
@@ -398,7 +402,7 @@ class _QueryTabState extends State<_QueryTab> {
                         const Spacer(),
                         TextButton.icon(
                           onPressed: () async {
-                            final history = await provider.getQueryHistory();
+                            await provider.getQueryHistory();
                             setState(() => _showHistory = !_showHistory);
                           },
                           icon: const Icon(Icons.history, size: 14),
@@ -523,11 +527,10 @@ class _HistoryList extends StatelessWidget {
               final entry = history[index];
               return InkWell(
                 onTap: () {
-                  final controller = TextEditingController(text: entry.query);
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('Query loaded into editor', style: const TextStyle(fontFamily: 'Inter')),
-                      action: SnackBarAction(label: 'OK', onPressed: () {}),
+                      content: Text('Query: ${entry.query}', style: const TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12)),
+                      action: SnackBarAction(label: 'Close', onPressed: () {}),
                     ),
                   );
                 },

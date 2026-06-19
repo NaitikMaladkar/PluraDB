@@ -33,45 +33,46 @@ class DatabaseServiceFactory {
 
 // ═══════════════════════════════════════════════════
 // SUPABASE — PostgREST HTTP API
+// Docs: https://supabase.com/docs/guides/api/rest/using-the-postgrest-client
+// The REST API is at {project_url}/rest/v1/
+// OpenAPI spec is at {project_url}/rest/v1/
+// Requires: apikey header (anon key) + Authorization header
 // ═══════════════════════════════════════════════════
 
 class SupabaseService implements DatabaseService {
   final DatabaseConfig config;
   SupabaseService(this.config);
 
-  Map<String, String> get _headers {
-    final key = config.serviceRoleKey.isNotEmpty ? config.serviceRoleKey : config.anonKey;
-    return {
-      'apikey': config.anonKey,
-      'Authorization': 'Bearer $key',
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation',
-    };
-  }
-
+  /// Build REST base URL, stripping trailing slashes
   String get _baseUrl {
     final url = config.projectUrl.replaceAll(RegExp(r'/+$'), '');
     return '$url/rest/v1';
   }
 
+  /// Build auth headers. Service role key gives full access, anon key is read-only.
+  Map<String, String> get _headers {
+    final bearerKey = config.serviceRoleKey.isNotEmpty ? config.serviceRoleKey : config.anonKey;
+    return {
+      'apikey': config.anonKey,
+      'Authorization': 'Bearer $bearerKey',
+      'Content-Type': 'application/json',
+    };
+  }
+
   @override
   Future<bool> testConnection() async {
     try {
-      // Try fetching the OpenAPI spec — this endpoint always exists
+      // Hit the OpenAPI spec endpoint — always available for valid projects
       final resp = await http
           .get(Uri.parse('$_baseUrl/'), headers: _headers)
-          .timeout(const Duration(seconds: 10));
-      if (resp.statusCode == 200) return true;
-      // Also try a simple health check alternative
-      final url = config.projectUrl.replaceAll(RegExp(r'/+$'), '');
-      final healthResp = await http
-          .get(Uri.parse('$url/rest/v1/'), headers: {
-            'apikey': config.anonKey,
-            'Authorization': 'Bearer ${config.serviceRoleKey.isNotEmpty ? config.serviceRoleKey : config.anonKey}',
-          })
-          .timeout(const Duration(seconds: 10));
-      return healthResp.statusCode == 200;
-    } catch (e) {
+          .timeout(const Duration(seconds: 15));
+      // 200 = success, 401 = URL is valid but key is wrong (still reachable)
+      return resp.statusCode == 200 || resp.statusCode == 401;
+    } on SocketException {
+      return false;
+    } on HandshakeException {
+      return false;
+    } catch (_) {
       return false;
     }
   }
@@ -81,17 +82,14 @@ class SupabaseService implements DatabaseService {
     try {
       final url = config.projectUrl.replaceAll(RegExp(r'/+$'), '');
       final resp = await http
-          .get(
-            Uri.parse('$url/rest/v1/'),
-            headers: {
-              ..._headers,
-              'Accept': 'application/json',
-            },
-          )
+          .get(Uri.parse('$url/rest/v1/'), headers: {..._headers, 'Accept': 'application/json'})
           .timeout(const Duration(seconds: 15));
 
+      if (resp.statusCode == 401) {
+        return QueryResult(error: 'Authentication failed. Check your anon key in Supabase Dashboard > Settings > API.');
+      }
       if (resp.statusCode != 200) {
-        return QueryResult(error: 'Failed to fetch schema (HTTP ${resp.statusCode})');
+        return QueryResult(error: 'Failed to fetch schema (HTTP ${resp.statusCode}). Is the project URL correct?');
       }
 
       final data = jsonDecode(resp.body);
@@ -99,53 +97,21 @@ class SupabaseService implements DatabaseService {
       final schemas = <Map<String, String>>[];
 
       for (final path in paths.keys) {
+        // Only match root-level table endpoints: /tablename
         final match = RegExp(r'^/(\w+)$').firstMatch(path);
         if (match != null) {
           final tableName = match.group(1)!;
-          final getOp = paths[path]['get'] as Map<String, dynamic>?;
-          if (getOp != null) {
-            final params = (getOp['parameters'] as List?) ?? [];
-            final selectParam = params.firstWhere(
-              (p) => p['name'] == 'select',
-              orElse: () => {'schema': {'enum': ['*']}},
-            );
-            final columns = ((selectParam['schema']?['enum'] as List?) ?? ['*'])
-                .map((c) => c.toString().trim())
-                .where((c) => c != '*')
-                .toList();
-            schemas.add({
-              'table': tableName,
-              'columns': columns.isEmpty ? '*' : columns.join(', '),
-            });
-          }
+          schemas.add({'table': tableName, 'columns': '*'});
         }
       }
 
-      if (schemas.isEmpty) {
-        // Fallback: try to get at least table names via PostgREST
-        // We'll try querying any public table
-        return QueryResult(
-          columns: ['Table', 'Columns'],
-          rows: schemas
-              .map((s) => {
-                    'Table': s['table'] as String,
-                    'Columns': s['columns'] as String
-                  })
-              .toList(),
-          rowCount: schemas.length,
-        );
-      }
-
       return QueryResult(
-        columns: ['Table', 'Columns'],
-        rows: schemas
-            .map((s) => {
-                  'Table': s['table'] as String,
-                  'Columns': s['columns'] as String
-                })
-            .toList(),
+        columns: ['Table'],
+        rows: schemas.map((s) => {'Table': s['table'] as String}).toList(),
         rowCount: schemas.length,
       );
+    } on SocketException catch (e) {
+      return QueryResult(error: 'Network error: Cannot reach Supabase. Check your internet connection.\n$e');
     } catch (e) {
       return QueryResult(error: 'Schema fetch error: $e');
     }
@@ -161,11 +127,14 @@ class SupabaseService implements DatabaseService {
       });
       final resp = await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15));
 
+      if (resp.statusCode == 401) {
+        return QueryResult(error: 'Authentication failed. Check your API key.');
+      }
       if (resp.statusCode == 406) {
-        return QueryResult(error: 'Table "$table" not found or access denied');
+        return QueryResult(error: 'Table "$table" not found or RLS policy prevents access.');
       }
       if (resp.statusCode != 200) {
-        return QueryResult(error: 'Error ${resp.statusCode}: ${resp.body}');
+        return QueryResult(error: 'HTTP ${resp.statusCode}: ${resp.body}');
       }
 
       final data = jsonDecode(resp.body) as List;
@@ -182,6 +151,8 @@ class SupabaseService implements DatabaseService {
       }
 
       return QueryResult(columns: columns, rows: rows, rowCount: totalCount ?? rows.length);
+    } on SocketException {
+      return QueryResult(error: 'Network error. Check your internet connection.');
     } catch (e) {
       return QueryResult(error: 'Error fetching table data: $e');
     }
@@ -192,154 +163,139 @@ class SupabaseService implements DatabaseService {
     try {
       final trimmedSql = sql.trim().toUpperCase();
 
-      // SELECT queries — try PostgREST table-level fetch
+      // SELECT: try to extract table and use PostgREST
       if (trimmedSql.startsWith('SELECT') || trimmedSql.startsWith('WITH')) {
-        // Try to parse the table name from FROM clause
         final tableMatch = RegExp(r'FROM\s+(\w+)', caseSensitive: false).firstMatch(sql);
         if (tableMatch != null) {
           return getTableData(tableMatch.group(1)!);
         }
-        // If no table found, it might be a complex query
-        return QueryResult(error: 'Complex SELECT queries must reference a specific table for PostgREST. Try: SELECT * FROM table_name');
+        return QueryResult(error: 'Could not parse table name from SELECT. For complex queries, use a table name directly.');
       }
 
       // INSERT via PostgREST
       if (trimmedSql.startsWith('INSERT')) {
-        final tableMatch = RegExp(r'INTO\s+(\w+)', caseSensitive: false).firstMatch(sql);
-        if (tableMatch != null) {
-          final tableName = tableMatch.group(1)!;
-          // Try to extract values from INSERT
-          final valuesMatch = RegExp(r"VALUES\s*\((.+)\)", caseSensitive: false).firstMatch(sql);
-          if (valuesMatch != null) {
-            // Build a simple row from the VALUES clause
-            final valuesStr = valuesMatch.group(1)!;
-            final values = _parseSqlValues(valuesStr);
-            final columnsMatch = RegExp(r'\(([^)]+)\)\s*VALUES', caseSensitive: false).firstMatch(sql);
-            if (columnsMatch != null) {
-              final cols = columnsMatch.group(1)!.split(',').map((c) => c.trim()).toList();
-              final row = <String, dynamic>{};
-              for (int i = 0; i < cols.length && i < values.length; i++) {
-                row[cols[i]] = values[i];
-              }
-              final resp = await http
-                  .post(Uri.parse('$_baseUrl/$tableName'), headers: _headers, body: jsonEncode(row))
-                  .timeout(const Duration(seconds: 15));
-              if (resp.statusCode == 201) {
-                return QueryResult(affectedRows: 1, columns: [], rows: []);
-              }
-              return QueryResult(error: 'Insert error (${resp.statusCode}): ${resp.body}');
-            }
-          }
-          // Fallback: try empty insert
-          final resp = await http
-              .post(Uri.parse('$_baseUrl/$tableName'), headers: _headers, body: '{}')
-              .timeout(const Duration(seconds: 15));
-          if (resp.statusCode == 201) return QueryResult(affectedRows: 1, columns: [], rows: []);
-          return QueryResult(error: 'Insert error (${resp.statusCode}): ${resp.body}');
+        if (config.serviceRoleKey.isEmpty) {
+          return QueryResult(error: 'Service Role Key is required for INSERT. Add it in database settings.');
         }
+        final tableMatch = RegExp(r'INTO\s+(\w+)', caseSensitive: false).firstMatch(sql);
+        if (tableMatch == null) {
+          return QueryResult(error: 'Could not parse table name from INSERT.');
+        }
+        final tableName = tableMatch.group(1)!;
+
+        // Try to extract column names and values
+        final colsValues = _parseInsert(sql);
+        final resp = await http
+            .post(Uri.parse('$_baseUrl/$tableName'), headers: _headers, body: jsonEncode(colsValues))
+            .timeout(const Duration(seconds: 15));
+
+        if (resp.statusCode == 201) {
+          return QueryResult(affectedRows: 1, columns: ['result'], rows: [{'result': 'Row inserted'}]);
+        }
+        if (resp.statusCode == 401) {
+          return QueryResult(error: 'Auth failed. Service Role Key required for INSERT.');
+        }
+        return QueryResult(error: 'Insert error (HTTP ${resp.statusCode}): ${resp.body}');
       }
 
       // UPDATE via PostgREST
       if (trimmedSql.startsWith('UPDATE')) {
-        final tableMatch = RegExp(r'UPDATE\s+(\w+)', caseSensitive: false).firstMatch(sql);
-        if (tableMatch != null) {
-          final tableName = tableMatch.group(1)!;
-          // Extract SET values
-          final setMatch = RegExp(r'SET\s+(.+?)(?:\s+WHERE\s+|\s*$)', caseSensitive: false, dotAll: true).firstMatch(sql);
-          if (setMatch != null) {
-            final setData = _parseSetClause(setMatch.group(1)!);
-            // Extract WHERE clause for PostgREST filter
-            final whereMatch = RegExp(r'WHERE\s+(.+)$', caseSensitive: false).firstMatch(sql);
-            String filter = '';
-            if (whereMatch != null) {
-              filter = '&${_sqlWhereToPostgrestFilter(whereMatch.group(1)!.trim())}';
-            }
-            final uri = Uri.parse('$_baseUrl/$tableName?$filter');
-            final resp = await http
-                .patch(uri, headers: _headers, body: jsonEncode(setData))
-                .timeout(const Duration(seconds: 15));
-            if (resp.statusCode == 200) {
-              final updated = jsonDecode(resp.body) as List;
-              return QueryResult(affectedRows: updated.length, columns: [], rows: []);
-            }
-            return QueryResult(error: 'Update error (${resp.statusCode}): ${resp.body}');
-          }
+        if (config.serviceRoleKey.isEmpty) {
+          return QueryResult(error: 'Service Role Key is required for UPDATE.');
         }
+        final tableMatch = RegExp(r'UPDATE\s+(\w+)', caseSensitive: false).firstMatch(sql);
+        if (tableMatch == null) {
+          return QueryResult(error: 'Could not parse table from UPDATE.');
+        }
+        final tableName = tableMatch.group(1)!;
+        final setData = _parseSetClause(sql);
+
+        final resp = await http
+            .patch(Uri.parse('$_baseUrl/$tableName'), headers: _headers, body: jsonEncode(setData))
+            .timeout(const Duration(seconds: 15));
+
+        if (resp.statusCode == 200) {
+          final updated = jsonDecode(resp.body) as List;
+          return QueryResult(affectedRows: updated.length, columns: ['result'], rows: [{'result': '${updated.length} row(s) updated'}]);
+        }
+        return QueryResult(error: 'Update error (HTTP ${resp.statusCode}): ${resp.body}');
       }
 
       // DELETE via PostgREST
       if (trimmedSql.startsWith('DELETE')) {
-        final tableMatch = RegExp(r'FROM\s+(\w+)', caseSensitive: false).firstMatch(sql);
-        if (tableMatch != null) {
-          final tableName = tableMatch.group(1)!;
-          final whereMatch = RegExp(r'WHERE\s+(.+)$', caseSensitive: false).firstMatch(sql);
-          String filter = '';
-          if (whereMatch != null) {
-            filter = '?${_sqlWhereToPostgrestFilter(whereMatch.group(1)!.trim())}';
-          }
-          final uri = Uri.parse('$_baseUrl/$tableName$filter');
-          final resp = await http
-              .delete(uri, headers: _headers)
-              .timeout(const Duration(seconds: 15));
-          if (resp.statusCode == 204 || resp.statusCode == 200) {
-            return QueryResult(affectedRows: 1, columns: [], rows: []);
-          }
-          return QueryResult(error: 'Delete error (${resp.statusCode}): ${resp.body}');
+        if (config.serviceRoleKey.isEmpty) {
+          return QueryResult(error: 'Service Role Key is required for DELETE.');
         }
+        final tableMatch = RegExp(r'FROM\s+(\w+)', caseSensitive: false).firstMatch(sql);
+        if (tableMatch == null) {
+          return QueryResult(error: 'Could not parse table from DELETE.');
+        }
+        final tableName = tableMatch.group(1)!;
+
+        final resp = await http
+            .delete(Uri.parse('$_baseUrl/$tableName'), headers: _headers)
+            .timeout(const Duration(seconds: 15));
+
+        if (resp.statusCode == 204 || resp.statusCode == 200) {
+          return QueryResult(affectedRows: 1, columns: ['result'], rows: [{'result': 'Deleted'}]);
+        }
+        return QueryResult(error: 'Delete error (HTTP ${resp.statusCode}): ${resp.body}');
       }
 
-      return QueryResult(error: 'Unsupported query type. PostgREST supports SELECT, INSERT, UPDATE, DELETE on tables.');
+      return QueryResult(error: 'Unsupported query. PostgREST supports SELECT, INSERT, UPDATE, DELETE on tables.');
+    } on SocketException {
+      return QueryResult(error: 'Network error. Check your internet connection.');
     } catch (e) {
-      return QueryResult(error: 'Query execution error: $e');
+      return QueryResult(error: 'Query error: $e');
     }
   }
 
-  List<dynamic> _parseSqlValues(String valuesStr) {
-    return valuesStr.split(',').map((v) {
-      v = v.trim();
-      if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
-        return v.substring(1, v.length - 1);
+  Map<String, dynamic> _parseInsert(String sql) {
+    // Try: INSERT INTO table (col1, col2) VALUES (val1, val2)
+    final colsMatch = RegExp(r'INSERT\s+INTO\s+\w+\s*\(([^)]+)\)', caseSensitive: false).firstMatch(sql);
+    final valsMatch = RegExp(r'VALUES\s*\((.+)\)', caseSensitive: false).firstMatch(sql);
+    if (colsMatch != null && valsMatch != null) {
+      final cols = colsMatch.group(1)!.split(',').map((c) => c.trim()).toList();
+      final vals = valsMatch.group(1)!.split(',').map((v) => _parseValue(v.trim())).toList();
+      final row = <String, dynamic>{};
+      for (int i = 0; i < cols.length && i < vals.length; i++) {
+        row[cols[i]] = vals[i];
       }
-      if (v.toLowerCase() == 'null') return null;
-      if (v.toLowerCase() == 'true') return true;
-      if (v.toLowerCase() == 'false') return false;
-      return int.tryParse(v) ?? double.tryParse(v) ?? v;
-    }).toList();
+      return row;
+    }
+    return {};
   }
 
-  Map<String, dynamic> _parseSetClause(String setStr) {
+  dynamic _parseValue(String v) {
+    if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
+      return v.substring(1, v.length - 1);
+    }
+    if (v.toLowerCase() == 'null') return null;
+    if (v.toLowerCase() == 'true') return true;
+    if (v.toLowerCase() == 'false') return false;
+    return int.tryParse(v) ?? double.tryParse(v) ?? v;
+  }
+
+  Map<String, dynamic> _parseSetClause(String sql) {
+    final setMatch = RegExp(r'SET\s+(.+?)(?:\s+WHERE\s+|$)', caseSensitive: false, dotAll: true).firstMatch(sql);
+    if (setMatch == null) return {};
     final result = <String, dynamic>{};
-    final pairs = setStr.split(',');
-    for (final pair in pairs) {
+    for (final pair in setMatch.group(1)!.split(',')) {
       final parts = pair.trim().split(RegExp(r'\s*=\s*'));
       if (parts.length == 2) {
-        final col = parts[0].trim();
-        var val = parts[1].trim();
-        if ((val.startsWith("'") && val.endsWith("'")) || (val.startsWith('"') && val.endsWith('"'))) {
-          val = val.substring(1, val.length - 1);
-        } else if (val.toLowerCase() == 'null') {
-          val = '';
-        }
-        final numVal = int.tryParse(val) ?? double.tryParse(val);
-        result[col] = numVal ?? val;
+        result[parts[0].trim()] = _parseValue(parts[1].trim());
       }
     }
     return result;
   }
-
-  String _sqlWhereToPostgrestFilter(String where) {
-    // Simple WHERE clause to PostgREST filter conversion
-    return where
-        .replaceAll(RegExp(r"(\w+)\s*=\s*'([^']*)'"), r'\1.eq.\2')
-        .replaceAll(RegExp(r"(\w+)\s*=\s*(\d+)"), r'\1.eq.\2')
-        .replaceAll(RegExp(r"(\w+)\s*=\s*(\w+)"), r'\1.eq.\2')
-        .replaceAll(RegExp(r'\s+AND\s+'), '&')
-        .replaceAll(RegExp(r'\s+OR\s+'), '|');
-  }
 }
 
 // ═══════════════════════════════════════════════════
-// NEON — HTTP SQL Proxy
+// NEON — HTTP SQL API
+// Neon exposes an HTTP endpoint at https://<host>/sql
+// Requires: Neon-Connection-String header + Basic auth
+// Response format: {"results": [...], "command_tag": "..."} on success
+//                  {"message": "...", "code": "..."} on error
 // ═══════════════════════════════════════════════════
 
 class NeonService implements DatabaseService {
@@ -347,10 +303,10 @@ class NeonService implements DatabaseService {
   NeonService(this.config);
 
   String get _host {
+    // If connection string provided, extract host from it
     if (config.connectionString.isNotEmpty) {
       try {
-        final uri = Uri.parse(config.connectionString);
-        return uri.host;
+        return Uri.parse(config.connectionString).host;
       } catch (_) {}
     }
     return config.host;
@@ -359,8 +315,7 @@ class NeonService implements DatabaseService {
   String get _user {
     if (config.connectionString.isNotEmpty) {
       try {
-        final uri = Uri.parse(config.connectionString);
-        return uri.userInfo.split(':').first;
+        return Uri.parse(config.connectionString).userInfo.split(':').first;
       } catch (_) {}
     }
     return config.user;
@@ -369,8 +324,8 @@ class NeonService implements DatabaseService {
   String get _password {
     if (config.connectionString.isNotEmpty) {
       try {
-        final uri = Uri.parse(config.connectionString);
-        final parts = uri.userInfo.split(':');
+        final info = Uri.parse(config.connectionString).userInfo;
+        final parts = info.split(':');
         return parts.length > 1 ? parts.sublist(1).join(':') : '';
       } catch (_) {}
     }
@@ -388,9 +343,9 @@ class NeonService implements DatabaseService {
   }
 
   Map<String, String> get _headers {
-    final credentials = base64Encode(utf8.encode('$_user:$_password'));
+    final creds = base64Encode(utf8.encode('$_user:$_password'));
     return {
-      'Authorization': 'Basic $credentials',
+      'Authorization': 'Basic $creds',
       'Content-Type': 'application/json',
       'Neon-Connection-String': 'postgresql://$_user:$_password@$_host/$_dbName',
     };
@@ -409,63 +364,56 @@ class NeonService implements DatabaseService {
   @override
   Future<QueryResult> executeQuery(String sql) async {
     try {
-      // Neon serverless driver HTTP endpoint
-      final uri = Uri.parse('https://$_host/sql');
       final resp = await http
-          .post(uri, headers: _headers, body: jsonEncode({'query': sql}))
+          .post(Uri.parse('https://$_host/sql'), headers: _headers, body: jsonEncode({'query': sql}))
           .timeout(const Duration(seconds: 15));
 
+      // Neon HTTP API returns {"message": "..."} on error
       if (resp.statusCode != 200) {
-        return QueryResult(error: 'Neon error (HTTP ${resp.statusCode}): ${resp.body}');
+        try {
+          final errData = jsonDecode(resp.body);
+          final msg = errData['message'] ?? resp.body;
+          return QueryResult(error: 'Neon error (HTTP ${resp.statusCode}): $msg');
+        } catch (_) {
+          return QueryResult(error: 'Neon error (HTTP ${resp.statusCode}): ${resp.body}');
+        }
       }
 
       final data = jsonDecode(resp.body);
 
-      // Handle different response formats
+      // Success format: {"results": [{"columns": [...], "rows": [...]}], "command_tag": "SELECT 1"}
       if (data is Map<String, dynamic>) {
-        if (data['error'] != null) {
-          return QueryResult(error: 'Neon SQL error: ${data['error']}');
-        }
-
-        // Standard Neon HTTP response: {"results": [...], "command_tag": "SELECT 1"}
         final results = data['results'] as List?;
         if (results != null && results.isNotEmpty) {
           final first = results.first as Map<String, dynamic>;
-          final columns = (first['columns'] as List?)?.map((c) => c.toString()).toList() ?? first.keys.toList();
+          final cols = (first['columns'] as List?)?.map((c) => c.toString()).toList() ?? [];
           final rows = (first['rows'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
-          return QueryResult(columns: columns, rows: rows, rowCount: rows.length);
+          return QueryResult(columns: cols, rows: rows, rowCount: rows.length);
         }
 
-        // Alternative format: rows directly
-        final rows = (data['rows'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
-        if (rows.isNotEmpty) {
-          return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
-        }
-
-        // No rows returned (INSERT/UPDATE/DELETE)
+        // No results (DDL or empty result set)
         final tag = data['command_tag'] as String?;
-        final rowCount = _parseCommandTag(tag);
-        return QueryResult(columns: [], rows: [], affectedRows: rowCount);
+        if (tag != null) {
+          final numMatch = RegExp(r'(\d+)').firstMatch(tag);
+          return QueryResult(columns: [], rows: [], affectedRows: numMatch != null ? int.parse(numMatch.group(1)!) : 0);
+        }
+
+        // Completely empty response
+        return QueryResult(columns: [], rows: []);
       }
 
-      return QueryResult(columns: [], rows: []);
+      return QueryResult(error: 'Unexpected response format from Neon.');
     } on SocketException catch (e) {
-      return QueryResult(error: 'Network error: Cannot reach $_host. Ensure the host is correct and network is available. ($e)');
+      return QueryResult(error: 'Cannot reach $_host. Check host and internet.\n$e');
     } catch (e) {
       return QueryResult(error: 'Neon connection error: $e');
     }
   }
 
-  int? _parseCommandTag(String? tag) {
-    if (tag == null) return null;
-    final match = RegExp(r'(\d+)').firstMatch(tag);
-    return match != null ? int.parse(match.group(1)!) : null;
-  }
-
   @override
-  Future<QueryResult> getSchema() async {
+  Future<QueryResult> getSchema() {
     return executeQuery(
-        "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
+        "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
   }
 
   @override
@@ -476,6 +424,8 @@ class NeonService implements DatabaseService {
 
 // ═══════════════════════════════════════════════════
 // PLANETSCALE — HTTP API
+// PlanetScale has REST API endpoints. For direct SQL,
+// an HTTP SQL proxy is needed.
 // ═══════════════════════════════════════════════════
 
 class PlanetScaleService implements DatabaseService {
@@ -495,13 +445,7 @@ class PlanetScaleService implements DatabaseService {
   @override
   Future<QueryResult> executeQuery(String sql) async {
     try {
-      // PlanetScale API: POST /v1/organizations/{org}/databases/{db}/query
-      // Or use the simplified host-based endpoint
-      final host = config.host.trim();
-      final dbName = config.databaseName.trim();
-
-      // Try the PlanetScale API endpoint
-      final uri = Uri.parse('https://$host/v1/databases/$dbName/query');
+      final uri = Uri.parse('https://${config.host}/v1/databases/${config.databaseName}/query');
       final resp = await http
           .post(
             uri,
@@ -514,51 +458,42 @@ class PlanetScaleService implements DatabaseService {
           )
           .timeout(const Duration(seconds: 15));
 
-      if (resp.statusCode != 200) {
-        // Try alternative endpoint format
-        final altUri = Uri.parse('https://$host');
-        final altResp = await http
-            .post(
-              altUri,
-              headers: {
-                'Authorization': 'Bearer ${config.password}',
-                'Content-Type': 'application/json',
-              },
-              body: jsonEncode({'query': sql, 'database': dbName}),
-            )
-            .timeout(const Duration(seconds: 15));
-
-        if (altResp.statusCode != 200) {
-          return QueryResult(
-              error: 'PlanetScale error (HTTP ${resp.statusCode}). '
-                  'Ensure host and password/token are correct. '
-                  'Note: PlanetScale requires an HTTP SQL proxy or API access.');
-        }
-
-        return _parsePlanetScaleResponse(altResp.body);
+      if (resp.statusCode == 200) {
+        return _parseResponse(resp.body);
       }
 
-      return _parsePlanetScaleResponse(resp.body);
+      // Try alternative: treat host as proxy URL
+      final proxyUri = Uri.parse('https://${config.host}/query');
+      final proxyResp = await http
+          .post(proxyUri, headers: {'Authorization': 'Bearer ${config.password}', 'Content-Type': 'application/json'}, body: jsonEncode({'query': sql, 'database': config.databaseName}))
+          .timeout(const Duration(seconds: 15));
+
+      if (proxyResp.statusCode == 200) {
+        return _parseResponse(proxyResp.body);
+      }
+
+      return QueryResult(
+          error: 'PlanetScale error (HTTP ${resp.statusCode}). '
+              'Ensure the host URL and API token are correct.\n'
+              'Note: PlanetScale requires an HTTP SQL proxy for direct query access.');
     } on SocketException catch (e) {
-      return QueryResult(error: 'Network error: Cannot reach ${config.host}. ($e)');
+      return QueryResult(error: 'Cannot reach ${config.host}. Check host and internet.\n$e');
     } catch (e) {
       return QueryResult(error: 'PlanetScale connection error: $e');
     }
   }
 
-  QueryResult _parsePlanetScaleResponse(String body) {
+  QueryResult _parseResponse(String body) {
     final data = jsonDecode(body);
     final rows = (data['results'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
-    if (rows.isEmpty) {
-      return QueryResult(columns: [], rows: [], affectedRows: 0);
-    }
+    if (rows.isEmpty) return QueryResult(columns: [], rows: []);
     return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
   }
 
   @override
-  Future<QueryResult> getSchema() async {
+  Future<QueryResult> getSchema() {
     return executeQuery(
-        "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position");
+        'SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = DATABASE() ORDER BY table_name, ordinal_position');
   }
 
   @override
@@ -569,37 +504,39 @@ class PlanetScaleService implements DatabaseService {
 
 // ═══════════════════════════════════════════════════
 // TURSO — libsql HTTP API
+// Endpoint: https://api.turso.tech/v1/organizations/{org}/databases/{db}/query
+// Auth: Bearer token
+// URL format: libsql://dbname-orgname.turso.io
 // ═══════════════════════════════════════════════════
 
 class TursoService implements DatabaseService {
   final DatabaseConfig config;
   TursoService(this.config);
 
-  /// Parse organization name and database name from Turso URL
-  /// Format: libsql://my-db-my-org.turso.io or turso://my-db-my-org.turso.io
-  Map<String, String> _parseTursoUrl(String url) {
-    // Try format: libsql://dbname-orgname.turso.io
+  /// Parse libsql:// URL to extract org and db names
+  /// Format: libsql://dbname-orgname.turso.io
+  void _parseUrl(String url, {required void Function(String org, String db) onSuccess}) {
+    // Standard format: libsql://dbname-orgname.turso.io
     final domainMatch = RegExp(r'libsql://([a-z0-9_-]+)\.turso\.io').firstMatch(url);
     if (domainMatch != null) {
       final name = domainMatch.group(1)!;
-      // Format is typically: dbname-orgname
-      final parts = name.split('-');
-      if (parts.length >= 2) {
-        return {'org': parts.last, 'db': parts.sublist(0, parts.length - 1).join('-')};
+      final lastDash = name.lastIndexOf('-');
+      if (lastDash > 0) {
+        onSuccess(name.substring(lastDash + 1), name.substring(0, lastDash));
+        return;
       }
-      return {'org': '_', 'db': name};
+      onSuccess('_', name);
+      return;
     }
 
-    // Try format with explicit path: libsql://orgname-tursoio.dbs.turso.io/dbname
-    final pathMatch = RegExp(r'libsql://[^/]+/(.+)$').firstMatch(url);
+    // With path: libsql://anything.turso.io/dbname
+    final pathMatch = RegExp(r'libsql://[^/]+/([^/?]+)').firstMatch(url);
     if (pathMatch != null) {
-      final dbName = pathMatch.group(1)!;
-      final orgMatch = RegExp(r'libsql://([a-z0-9-]+)\.').firstMatch(url);
-      final org = orgMatch != null ? orgMatch.group(1)!.split('-').first : '_';
-      return {'org': org, 'db': dbName};
+      onSuccess('_', pathMatch.group(1)!);
+      return;
     }
 
-    return {'org': '_', 'db': '_'};
+    onSuccess('_', '_');
   }
 
   @override
@@ -615,12 +552,12 @@ class TursoService implements DatabaseService {
   @override
   Future<QueryResult> executeQuery(String sql) async {
     try {
-      final dbUrl = config.databaseUrl.trim();
-
-      // Parse org and db from URL
-      final parsed = _parseTursoUrl(dbUrl);
-      final orgName = parsed['org']!;
-      final dbName = parsed['db']!;
+      late String orgName;
+      late String dbName;
+      _parseUrl(config.databaseUrl, onSuccess: (org, db) {
+        orgName = org;
+        dbName = db;
+      });
 
       final endpoint = Uri.parse('https://api.turso.tech/v1/organizations/$orgName/databases/$dbName/query');
       final resp = await http
@@ -636,12 +573,11 @@ class TursoService implements DatabaseService {
 
       if (resp.statusCode == 404) {
         return QueryResult(
-            error: 'Turso database not found. Check your database URL format. '
-                'Expected: libsql://dbname-orgname.turso.io\n'
-                'Parsed org="$orgName", db="$dbName"');
+            error: 'Database not found. URL format should be: libsql://<dbname>-<orgname>.turso.io\n'
+                'Parsed: org="$orgName", db="$dbName"');
       }
       if (resp.statusCode == 401) {
-        return QueryResult(error: 'Turso auth failed. Check your auth token.');
+        return QueryResult(error: 'Authentication failed. Check your Turso auth token.');
       }
       if (resp.statusCode != 200) {
         return QueryResult(error: 'Turso error (HTTP ${resp.statusCode}): ${resp.body}');
@@ -652,21 +588,16 @@ class TursoService implements DatabaseService {
       final rows = (results['rows'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
       final cols = (results['cols'] as List?)?.map((c) => (c['name'] ?? c).toString()).toList() ?? [];
 
-      if (rows.isEmpty && cols.isEmpty) {
-        // For DDL statements or empty results
-        return QueryResult(columns: [], rows: [], affectedRows: 0);
-      }
-
       return QueryResult(columns: cols, rows: rows, rowCount: rows.length);
     } on SocketException catch (e) {
-      return QueryResult(error: 'Network error: Cannot reach Turso API. ($e)');
+      return QueryResult(error: 'Cannot reach Turso API. Check internet.\n$e');
     } catch (e) {
       return QueryResult(error: 'Turso connection error: $e');
     }
   }
 
   @override
-  Future<QueryResult> getSchema() async {
+  Future<QueryResult> getSchema() {
     return executeQuery("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
   }
 
@@ -678,38 +609,27 @@ class TursoService implements DatabaseService {
 
 // ═══════════════════════════════════════════════════
 // COCKROACHDB — HTTP SQL Proxy
+// Default port: 26257
+// Requires HTTP SQL proxy for mobile access
 // ═══════════════════════════════════════════════════
 
 class CockroachDBService implements DatabaseService {
   final DatabaseConfig config;
   CockroachDBService(this.config);
 
-  /// CockroachDB uses PostgreSQL wire protocol.
-  /// For HTTP access from mobile, you need an HTTP SQL proxy.
-  /// The proxy endpoint is expected to accept POST /sql with JSON body.
   String get _proxyUrl {
-    // User can either provide a full proxy URL or we construct one
     if (config.host.startsWith('http://') || config.host.startsWith('https://')) {
       return config.host.replaceAll(RegExp(r'/+$'), '');
     }
-    final port = config.port.isNotEmpty ? config.port : '26257';
-    return 'http://${config.host}:$port';
+    return 'http://${config.host}:${config.port.isNotEmpty ? config.port : '26257'}';
   }
 
   Map<String, String> get _headers {
     if (config.anonKey.isNotEmpty) {
-      // If user provided an API key/token for the proxy
-      return {
-        'Authorization': 'Bearer ${config.anonKey}',
-        'Content-Type': 'application/json',
-      };
+      return {'Authorization': 'Bearer ${config.anonKey}', 'Content-Type': 'application/json'};
     }
-    // Basic auth with user:password
-    final credentials = base64Encode(utf8.encode('${config.user}:${config.password}'));
-    return {
-      'Authorization': 'Basic $credentials',
-      'Content-Type': 'application/json',
-    };
+    final creds = base64Encode(utf8.encode('${config.user}:${config.password}'));
+    return {'Authorization': 'Basic $creds', 'Content-Type': 'application/json'};
   }
 
   @override
@@ -725,7 +645,6 @@ class CockroachDBService implements DatabaseService {
   @override
   Future<QueryResult> executeQuery(String sql) async {
     try {
-      final uri = Uri.parse('$_proxyUrl/sql');
       final body = jsonEncode({
         'query': sql,
         'database': config.databaseName,
@@ -734,56 +653,43 @@ class CockroachDBService implements DatabaseService {
       });
 
       final resp = await http
-          .post(uri, headers: _headers, body: body)
+          .post(Uri.parse('$_proxyUrl/sql'), headers: _headers, body: body)
           .timeout(const Duration(seconds: 15));
 
-      if (resp.statusCode != 200) {
-        // Try alternative endpoint (some proxies use /query instead of /sql)
-        final altUri = Uri.parse('$_proxyUrl/query');
-        final altResp = await http
-            .post(altUri, headers: _headers, body: body)
-            .timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200) return _parseResponse(resp.body);
 
-        if (altResp.statusCode != 200) {
-          return QueryResult(
-              error: 'CockroachDB proxy error (HTTP ${resp.statusCode}). '
-                  'Ensure your HTTP SQL proxy is running and accessible.\n'
-                  'CockroachDB requires an HTTP SQL proxy for mobile access. '
-                  'Set up a proxy like "pg-proxy" or "postgres-http-proxy".');
-        }
-        return _parseProxyResponse(altResp.body);
-      }
+      // Try /query endpoint as fallback
+      final altResp = await http
+          .post(Uri.parse('$_proxyUrl/query'), headers: _headers, body: body)
+          .timeout(const Duration(seconds: 10));
 
-      return _parseProxyResponse(resp.body);
-    } on SocketException catch (e) {
+      if (altResp.statusCode == 200) return _parseResponse(altResp.body);
+
       return QueryResult(
-          error: 'Network error: Cannot reach $_proxyUrl. '
-              'Ensure your HTTP SQL proxy is running and the host/port is correct.\n'
-              '($e)');
+          error: 'CockroachDB proxy error (HTTP ${resp.statusCode}). '
+              'Ensure your HTTP SQL proxy is running at $_proxyUrl\n'
+              'CockroachDB requires a proxy like "postgres-http-proxy" for mobile access.');
+    } on SocketException catch (e) {
+      return QueryResult(error: 'Cannot reach $_proxyUrl. Is the proxy running?\n$e');
     } catch (e) {
-      return QueryResult(error: 'CockroachDB connection error: $e');
+      return QueryResult(error: 'CockroachDB error: $e');
     }
   }
 
-  QueryResult _parseProxyResponse(String body) {
+  QueryResult _parseResponse(String body) {
     final data = jsonDecode(body);
     if (data is Map<String, dynamic>) {
-      if (data['error'] != null) {
-        return QueryResult(error: data['error'].toString());
-      }
+      if (data['error'] != null) return QueryResult(error: data['error'].toString());
       final rows = (data['rows'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
-      if (rows.isNotEmpty) {
-        return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
-      }
+      if (rows.isNotEmpty) return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
       return QueryResult(columns: [], rows: [], affectedRows: data['affected_rows'] as int?);
     }
     return QueryResult(columns: [], rows: []);
   }
 
   @override
-  Future<QueryResult> getSchema() async {
-    return executeQuery(
-        "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
+  Future<QueryResult> getSchema() {
+    return executeQuery("SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
   }
 
   @override
@@ -794,6 +700,7 @@ class CockroachDBService implements DatabaseService {
 
 // ═══════════════════════════════════════════════════
 // CUSTOM POSTGRESQL — HTTP SQL Proxy
+// Any PostgreSQL accessible via HTTP proxy
 // ═══════════════════════════════════════════════════
 
 class CustomPostgresService implements DatabaseService {
@@ -804,22 +711,15 @@ class CustomPostgresService implements DatabaseService {
     if (config.host.startsWith('http://') || config.host.startsWith('https://')) {
       return config.host.replaceAll(RegExp(r'/+$'), '');
     }
-    final port = config.port.isNotEmpty ? config.port : '5432';
-    return 'http://${config.host}:$port';
+    return 'http://${config.host}:${config.port.isNotEmpty ? config.port : '5432'}';
   }
 
   Map<String, String> get _headers {
     if (config.anonKey.isNotEmpty) {
-      return {
-        'Authorization': 'Bearer ${config.anonKey}',
-        'Content-Type': 'application/json',
-      };
+      return {'Authorization': 'Bearer ${config.anonKey}', 'Content-Type': 'application/json'};
     }
-    final credentials = base64Encode(utf8.encode('${config.user}:${config.password}'));
-    return {
-      'Authorization': 'Basic $credentials',
-      'Content-Type': 'application/json',
-    };
+    final creds = base64Encode(utf8.encode('${config.user}:${config.password}'));
+    return {'Authorization': 'Basic $creds', 'Content-Type': 'application/json'};
   }
 
   @override
@@ -835,7 +735,6 @@ class CustomPostgresService implements DatabaseService {
   @override
   Future<QueryResult> executeQuery(String sql) async {
     try {
-      final uri = Uri.parse('$_proxyUrl/sql');
       final body = jsonEncode({
         'query': sql,
         'database': config.databaseName,
@@ -844,54 +743,42 @@ class CustomPostgresService implements DatabaseService {
       });
 
       final resp = await http
-          .post(uri, headers: _headers, body: body)
+          .post(Uri.parse('$_proxyUrl/sql'), headers: _headers, body: body)
           .timeout(const Duration(seconds: 15));
 
-      if (resp.statusCode != 200) {
-        // Try alternative endpoint
-        final altUri = Uri.parse('$_proxyUrl/query');
-        final altResp = await http
-            .post(altUri, headers: _headers, body: body)
-            .timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200) return _parseResponse(resp.body);
 
-        if (altResp.statusCode != 200) {
-          return QueryResult(
-              error: 'Connection error (HTTP ${resp.statusCode}). '
-                  'Custom databases require an HTTP SQL proxy (e.g., "postgres-http-proxy") '
-                  'running and accessible from your device.');
-        }
-        return _parseProxyResponse(altResp.body);
-      }
+      // Try /query endpoint as fallback
+      final altResp = await http
+          .post(Uri.parse('$_proxyUrl/query'), headers: _headers, body: body)
+          .timeout(const Duration(seconds: 10));
 
-      return _parseProxyResponse(resp.body);
-    } on SocketException catch (e) {
+      if (altResp.statusCode == 200) return _parseResponse(altResp.body);
+
       return QueryResult(
-          error: 'Network error: Cannot reach $_proxyUrl. '
-          'Ensure your HTTP SQL proxy is running.\n($e)');
+          error: 'Connection error (HTTP ${resp.statusCode}). '
+              'Custom databases need an HTTP SQL proxy (e.g. "postgres-http-proxy") running at $_proxyUrl');
+    } on SocketException catch (e) {
+      return QueryResult(error: 'Cannot reach $_proxyUrl. Is the proxy running?\n$e');
     } catch (e) {
-      return QueryResult(error: 'Custom DB connection error: $e');
+      return QueryResult(error: 'Custom DB error: $e');
     }
   }
 
-  QueryResult _parseProxyResponse(String body) {
+  QueryResult _parseResponse(String body) {
     final data = jsonDecode(body);
     if (data is Map<String, dynamic>) {
-      if (data['error'] != null) {
-        return QueryResult(error: data['error'].toString());
-      }
+      if (data['error'] != null) return QueryResult(error: data['error'].toString());
       final rows = (data['rows'] as List?)?.map((r) => Map<String, dynamic>.from(r as Map)).toList() ?? [];
-      if (rows.isNotEmpty) {
-        return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
-      }
+      if (rows.isNotEmpty) return QueryResult(columns: rows.first.keys.toList(), rows: rows, rowCount: rows.length);
       return QueryResult(columns: [], rows: [], affectedRows: data['affected_rows'] as int?);
     }
     return QueryResult(columns: [], rows: []);
   }
 
   @override
-  Future<QueryResult> getSchema() async {
-    return executeQuery(
-        "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
+  Future<QueryResult> getSchema() {
+    return executeQuery("SELECT table_name, column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' ORDER BY table_name, ordinal_position");
   }
 
   @override
